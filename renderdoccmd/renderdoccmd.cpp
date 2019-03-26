@@ -623,6 +623,108 @@ struct ReplayCommand : public Command
   }
 };
 
+struct SaveTextureCommand : public Command
+{
+  SaveTextureCommand(const GlobalEnvironment &env) : Command(env) {}
+  virtual void AddOptions(cmdline::parser &parser)
+  {
+    parser.set_footer("<capture.rdc>");
+    parser.add<string>("out", 'o', "The output filename to save the texture to", true, "filename.png");
+  }
+  virtual const char *Description()
+  {
+    return "Opens capture and saves it as picture to specified file.";
+  }
+  virtual bool IsInternalOnly() { return false; }
+  virtual bool IsCaptureCommand() { return false; }
+  virtual int Execute(cmdline::parser &parser, const CaptureOptions &)
+  {
+
+    std::vector<std::string> rest = parser.rest();
+    if(rest.empty())
+    {
+      std::cerr << "Error: save-texture command requires a filename to load." << std::endl
+                << std::endl
+                << parser.usage();
+      return 0;
+    }
+
+    string filename = rest[0];
+
+    rest.erase(rest.begin());
+
+    RENDERDOC_InitGlobalEnv(m_Env, convertArgs(rest));
+
+    string outfile = parser.get<string>("out");
+
+    FileType type = FileType::PNG;
+
+	const char *dot = strrchr(outfile.c_str(), '.');
+
+    if(dot != NULL && strstr(dot, "png"))
+      type = FileType::PNG;
+    else if(dot != NULL && strstr(dot, "tga"))
+      type = FileType::TGA;
+    else if(dot != NULL && strstr(dot, "bmp"))
+      type = FileType::BMP;
+    else if(dot != NULL && strstr(dot, "jpg"))
+      type = FileType::JPG;
+    else
+      std::cerr << "Couldn't guess format from '" << outfile << "', defaulting to png."
+            << std::endl;
+
+    std::cout << "Replaying '" << filename << "' locally.." << std::endl;
+
+    ICaptureFile *file = RENDERDOC_OpenCaptureFile();
+
+    if(file->OpenFile(filename.c_str(), "rdc", NULL) != ReplayStatus::Succeeded)
+    {
+      std::cerr << "Couldn't load '" << filename << "'." << std::endl;
+      return 1;
+    }
+
+    IReplayController *renderer = NULL;
+    ReplayStatus status = ReplayStatus::InternalError;
+    std::tie(status, renderer) = file->OpenCapture(NULL);
+
+    file->Shutdown();
+
+    if(status == ReplayStatus::Succeeded)
+    {
+      TextureSave texSave;
+      bool result = false;
+
+      texSave.mip = 0;
+      texSave.comp.blackPoint = 0.0f;
+      texSave.comp.whitePoint = 1.0f;
+      texSave.destType = type;
+
+      rdcarray<TextureDescription> texs = renderer->GetTextures();
+
+      for(const TextureDescription &desc : texs)
+      {
+        if(desc.creationFlags & TextureCategory::SwapBuffer)
+        {
+          texSave.resourceId = desc.resourceId;
+          break;
+        }
+      }
+
+      rdcarray<DrawcallDescription> draws = renderer->GetDrawcalls();
+
+      renderer->SaveTexture(texSave, outfile.c_str());
+      renderer->Shutdown();
+    }
+    else
+    {
+      std::cerr << "Couldn't load and replay '" << filename << "': " << ToStr(status) << std::endl;
+      return 1;
+    }
+
+    return 0;
+  }
+};
+
 struct formats_reader
 {
   formats_reader()
@@ -1207,6 +1309,7 @@ int renderdoccmd(const GlobalEnvironment &env, std::vector<std::string> &argv)
     add_command("convert", new ConvertCommand(env));
     add_command("embed", new EmbeddedSectionCommand(env, false));
     add_command("extract", new EmbeddedSectionCommand(env, true));
+	add_command("savetexture", new SaveTextureCommand(env));
 
     if(argv.size() <= 1)
     {
